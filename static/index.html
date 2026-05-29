@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>HTMLreaderLLM</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark">H</span>
+          <span>HTMLreaderLLM</span>
+        </div>
+        <form id="url-form" class="url-form">
+          <input id="url-input" type="url" placeholder="https://arxiv.org/html/2603.22301v1" autocomplete="off">
+          <button type="submit" title="Import URL">Import</button>
+        </form>
+        <label class="upload-button" title="Upload document">
+          Upload
+          <input id="file-input" type="file" accept=".pdf,.epub,.html,.htm,.txt,.md,application/pdf,application/epub+zip,text/html,text/plain">
+        </label>
+      </header>
+
+      <main class="workspace">
+        <aside class="library">
+          <div class="panel-title">Library</div>
+          <div id="document-list" class="document-list"></div>
+        </aside>
+
+        <section class="reader-column">
+          <div class="reader-toolbar">
+            <div>
+              <div id="document-title" class="document-title">No document open</div>
+              <div id="document-meta" class="document-meta">Import a URL or upload a file to begin.</div>
+            </div>
+            <button id="open-source" class="ghost-button" type="button" title="Open original document" disabled>Open</button>
+          </div>
+          <div id="reader" class="reader empty-state">
+            <div>Select a document from the library.</div>
+          </div>
+        </section>
+
+        <aside class="chat-column">
+          <div class="chat-settings">
+            <select id="provider-select" title="Provider">
+              <option value="">Default</option>
+              <option value="fallback">Fallback</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="gemini">Gemini</option>
+            </select>
+            <input id="model-input" type="text" placeholder="model">
+          </div>
+
+          <div class="selection-box">
+            <div class="panel-title">Selection</div>
+            <textarea id="selection-text" placeholder="Selected text appears here"></textarea>
+          </div>
+
+          <div id="chat-log" class="chat-log"></div>
+
+          <form id="chat-form" class="chat-form">
+            <textarea id="question-input" placeholder="Ask about the selected passage or the document"></textarea>
+            <button type="submit" title="Ask">Ask</button>
+          </form>
+        </aside>
+      </main>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js"></script>
+    <script>
+      window.MathJax = {
+        tex: {
+          inlineMath: [["\\(", "\\)"], ["$", "$"]],
+          displayMath: [["\\[", "\\]"], ["$$", "$$"]],
+          processEscapes: true
+        },
+        options: {
+          skipHtmlTags: ["script", "noscript", "style", "textarea", "pre", "code"]
+        }
+      };
+    </script>
+    <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

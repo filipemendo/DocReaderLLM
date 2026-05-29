@@ -1,0 +1,12 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+httpx==0.28.1
+pydantic-settings==2.7.1
+beautifulsoup4==4.12.3
+bleach==6.2.0
+PyMuPDF==1.25.1
+ebooklib==0.18
+openai==1.59.7
+anthropic==0.43.1
+google-generativeai==0.8.3

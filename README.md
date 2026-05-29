@@ -1,0 +1,55 @@
+# HTMLreaderLLM
+
+A local browser-based reader that keeps technical documents and chatbot clarification in one UI.
+
+The MVP supports:
+
+- Uploading PDF, EPUB, HTML, and plain text files
+- Importing remote HTML/PDF/EPUB/TXT documents by URL
+- Reading the document in the left pane
+- Selecting text and asking a question in the chat pane
+- Sending selected text plus nearby document context to OpenAI, Anthropic, Gemini, or a local fallback
+
+## Run
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+uvicorn app.main:app --reload
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000
+```
+
+## LLM Providers
+
+Set one or more API keys in `.env`:
+
+```bash
+OPENAI_API_KEY=...
+ANTHROPIC_API_KEY=...
+GEMINI_API_KEY=...
+DEFAULT_PROVIDER=openai
+DEFAULT_MODEL=gpt-4.1-mini
+```
+
+Supported provider values:
+
+```text
+default
+fallback
+openai
+anthropic
+gemini
+```
+
+If no key is configured, the fallback provider returns an extractive answer using the selected passage and retrieved document context. This keeps the reader usable without sending data to an external API.
+
+## Notes
+
+Remote HTML is fetched by the backend, sanitized, cached locally, and rendered inside a sandboxed iframe. PDF and EPUB files are served from the local cache after upload/import.
