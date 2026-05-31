@@ -1,5 +1,7 @@
 const state = {
   documents: [],
+  chats: [],
+  activeChat: null,
   activeDocument: null,
 };
 
@@ -8,10 +10,18 @@ const els = {
   urlInput: document.querySelector("#url-input"),
   fileInput: document.querySelector("#file-input"),
   documentList: document.querySelector("#document-list"),
+  addDocuments: document.querySelector("#add-documents"),
+  libraryModal: document.querySelector("#library-modal"),
+  closeLibrary: document.querySelector("#close-library"),
+  librarySearch: document.querySelector("#library-search"),
+  libraryList: document.querySelector("#library-list"),
   documentTitle: document.querySelector("#document-title"),
   documentMeta: document.querySelector("#document-meta"),
   reader: document.querySelector("#reader"),
   openSource: document.querySelector("#open-source"),
+  activeChatTitle: document.querySelector("#active-chat-title"),
+  chatList: document.querySelector("#chat-list"),
+  newChat: document.querySelector("#new-chat"),
   selectionText: document.querySelector("#selection-text"),
   chatLog: document.querySelector("#chat-log"),
   chatForm: document.querySelector("#chat-form"),
@@ -35,18 +45,96 @@ async function api(path, options = {}) {
   return response.json();
 }
 
-async function loadDocuments() {
-  const payload = await api("/api/documents");
-  state.documents = payload.documents;
-  renderDocumentList();
-  if (!state.activeDocument && state.documents.length) {
-    openDocument(state.documents[0].id);
+async function initializeApp() {
+  await loadDocuments();
+  await loadChats();
+  if (state.chats.length) {
+    await openChat(state.chats[0].id);
+  } else {
+    await createNewChat();
   }
 }
 
-function renderDocumentList() {
+async function loadDocuments() {
+  const payload = await api("/api/documents");
+  state.documents = payload.documents;
+  renderAttachedDocuments();
+  renderLibraryList();
+}
+
+async function loadChats() {
+  const payload = await api("/api/chats");
+  state.chats = payload.chats;
+  renderChatList();
+}
+
+async function createNewChat() {
+  const payload = await api("/api/chats", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  await loadChats();
+  await openChat(payload.chat.id, { openFirstDocument: false });
+}
+
+async function openChat(chatId, options = {}) {
+  const payload = await api(`/api/chats/${chatId}`);
+  state.activeChat = payload.chat;
+  els.activeChatTitle.textContent = state.activeChat.title;
+  renderChatList();
+  renderAttachedDocuments();
+  renderChatMessages();
+  renderLibraryList();
+
+  const attachedIds = new Set(state.activeChat.document_ids);
+  if (state.activeDocument && !attachedIds.has(state.activeDocument.id)) {
+    clearReader();
+  }
+  if (!state.activeDocument && options.openFirstDocument !== false && state.activeChat.document_ids.length) {
+    await openDocument(state.activeChat.document_ids[0]);
+  }
+}
+
+function renderChatList() {
+  els.chatList.innerHTML = "";
+  if (!state.chats.length) {
+    els.chatList.innerHTML = `<div class="empty-copy">No saved chats yet.</div>`;
+    return;
+  }
+  state.chats.forEach((chat) => {
+    const item = window.document.createElement("button");
+    item.type = "button";
+    item.className = `chat-item ${state.activeChat?.id === chat.id ? "active" : ""}`;
+    item.innerHTML = `
+      <div class="chat-item-title">${escapeHtml(chat.title)}</div>
+      <div class="chat-item-meta">${chat.message_count} messages - ${chat.document_ids.length} docs</div>
+    `;
+    item.addEventListener("click", () => openChat(chat.id));
+    els.chatList.appendChild(item);
+  });
+}
+
+function renderAttachedDocuments() {
   els.documentList.innerHTML = "";
-  state.documents.forEach((doc) => {
+  if (!state.activeChat) {
+    els.documentList.innerHTML = `<div class="empty-copy">Start or select a chat.</div>`;
+    return;
+  }
+
+  const attached = state.activeChat.document_ids
+    .map((documentId) => findDocument(documentId))
+    .filter(Boolean);
+
+  if (!attached.length) {
+    els.documentList.innerHTML = `<div class="empty-copy">This chat has no documents attached yet. Use Add to choose from the saved library.</div>`;
+    return;
+  }
+
+  attached.forEach((doc) => {
+    const row = window.document.createElement("div");
+    row.className = "document-row";
+
     const item = window.document.createElement("button");
     item.type = "button";
     item.className = `document-item ${state.activeDocument?.id === doc.id ? "active" : ""}`;
@@ -55,16 +143,33 @@ function renderDocumentList() {
       <div class="document-item-meta">${escapeHtml(doc.kind.toUpperCase())} - ${formatCount(doc.text_length)} chars</div>
     `;
     item.addEventListener("click", () => openDocument(doc.id));
-    els.documentList.appendChild(item);
+
+    const remove = window.document.createElement("button");
+    remove.type = "button";
+    remove.className = "remove-document";
+    remove.title = "Remove from chat";
+    remove.textContent = "x";
+    remove.addEventListener("click", () => detachDocument(doc.id));
+
+    row.appendChild(item);
+    row.appendChild(remove);
+    els.documentList.appendChild(row);
   });
 }
 
 async function openDocument(documentId) {
   const payload = await api(`/api/documents/${documentId}`);
   state.activeDocument = payload.document;
-  renderDocumentList();
+  renderAttachedDocuments();
   renderDocumentHeader();
   await renderReader(payload.document);
+}
+
+function clearReader() {
+  state.activeDocument = null;
+  renderDocumentHeader();
+  els.reader.className = "reader empty-state";
+  els.reader.innerHTML = "<div>Select a document attached to this chat.</div>";
 }
 
 function renderDocumentHeader() {
@@ -72,7 +177,7 @@ function renderDocumentHeader() {
   els.documentTitle.textContent = doc ? doc.title : "No document open";
   els.documentMeta.textContent = doc
     ? `${doc.kind.toUpperCase()} - ${doc.source_type}${doc.source_url ? ` - ${doc.source_url}` : ""}`
-    : "Import a URL or upload a file to begin.";
+    : "Attach a saved document to the current chat, then open it.";
   els.openSource.disabled = !doc;
 }
 
@@ -80,7 +185,7 @@ async function renderReader(doc) {
   els.reader.className = "reader";
   els.reader.innerHTML = "";
 
-  if (doc.kind === "html" || doc.kind === "text") {
+  if (doc.kind === "html" || doc.kind === "text" || doc.kind === "epub") {
     const frame = window.document.createElement("iframe");
     frame.setAttribute("sandbox", "allow-scripts allow-popups allow-forms");
     frame.src = `/api/documents/${doc.id}/html`;
@@ -96,26 +201,110 @@ async function renderReader(doc) {
     return;
   }
 
-  if (doc.kind === "epub" && window.ePub) {
-    const host = window.document.createElement("div");
-    host.id = "epub-viewer";
-    host.style.height = "100%";
-    els.reader.appendChild(host);
-    const book = window.ePub(`/api/documents/${doc.id}/file`);
-    const rendition = book.renderTo(host, { width: "100%", height: "100%", spread: "none" });
-    rendition.display();
-    rendition.on("selected", (_cfiRange, contents) => {
-      setSelectionText(contents.window.getSelection().toString());
-    });
-    return;
-  }
-
   const payload = await api(`/api/documents/${doc.id}/text`);
   const pre = window.document.createElement("pre");
   pre.className = "reader-text";
   pre.textContent = payload.text || "No readable text was extracted.";
   pre.addEventListener("mouseup", captureTopSelection);
   els.reader.appendChild(pre);
+}
+
+function renderChatMessages() {
+  els.chatLog.innerHTML = "";
+  if (!state.activeChat?.messages.length) {
+    addMessage("assistant", "Ready", "Ask about a selected passage, or attach multiple documents and ask across them.", false);
+    return;
+  }
+  state.activeChat.messages.forEach((message) => {
+    const meta = message.role === "assistant"
+      ? `${message.provider || "assistant"}${message.model ? ` - ${message.model}` : ""}`
+      : "Question";
+    addMessage(message.role, meta, message.content, message.role === "assistant");
+  });
+}
+
+function renderLibraryList() {
+  if (!els.libraryList) return;
+  const query = els.librarySearch.value.trim().toLowerCase();
+  const attachedIds = new Set(state.activeChat?.document_ids || []);
+  const filtered = state.documents.filter((doc) => {
+    const haystack = `${doc.title} ${doc.kind} ${doc.source_name} ${doc.source_url || ""}`.toLowerCase();
+    return !query || haystack.includes(query);
+  });
+
+  els.libraryList.innerHTML = "";
+  if (!filtered.length) {
+    els.libraryList.innerHTML = `<div class="empty-copy">No documents match this search.</div>`;
+    return;
+  }
+
+  filtered.forEach((doc) => {
+    const row = window.document.createElement("div");
+    row.className = "library-item";
+    const attached = attachedIds.has(doc.id);
+    row.innerHTML = `
+      <div class="library-item-main">
+        <div class="document-item-title">${escapeHtml(doc.title)}</div>
+        <div class="document-item-meta">${escapeHtml(doc.kind.toUpperCase())} - ${formatCount(doc.text_length)} chars</div>
+      </div>
+    `;
+    const action = window.document.createElement("button");
+    action.type = "button";
+    action.className = "library-item-action";
+    action.textContent = attached ? "Open" : "Add";
+    action.addEventListener("click", async () => {
+      if (!attached) {
+        await attachDocument(doc.id);
+      }
+      closeLibraryModal();
+      await openDocument(doc.id);
+    });
+    row.appendChild(action);
+    els.libraryList.appendChild(row);
+  });
+}
+
+async function attachDocument(documentId) {
+  await ensureActiveChat();
+  const payload = await api(`/api/chats/${state.activeChat.id}/documents`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ document_ids: [documentId] }),
+  });
+  state.activeChat = payload.chat;
+  await loadChats();
+  renderAttachedDocuments();
+  renderLibraryList();
+}
+
+async function detachDocument(documentId) {
+  if (!state.activeChat) return;
+  const payload = await api(`/api/chats/${state.activeChat.id}/documents/${documentId}`, {
+    method: "DELETE",
+  });
+  state.activeChat = payload.chat;
+  await loadChats();
+  renderAttachedDocuments();
+  renderLibraryList();
+  if (state.activeDocument?.id === documentId) {
+    clearReader();
+  }
+}
+
+async function ensureActiveChat() {
+  if (!state.activeChat) {
+    await createNewChat();
+  }
+}
+
+function openLibraryModal() {
+  renderLibraryList();
+  els.libraryModal.classList.remove("hidden");
+  els.librarySearch.focus();
+}
+
+function closeLibraryModal() {
+  els.libraryModal.classList.add("hidden");
 }
 
 function captureTopSelection() {
@@ -130,8 +319,9 @@ async function importUrl(event) {
   const url = els.urlInput.value.trim();
   if (!url) return;
   setBusy(event.submitter, true);
-  addMessage("user", "Import URL", url);
+  addMessage("user", "Import URL", url, false);
   try {
+    await ensureActiveChat();
     const payload = await api("/api/documents/import-url", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -139,10 +329,11 @@ async function importUrl(event) {
     });
     els.urlInput.value = "";
     await loadDocuments();
+    await attachDocument(payload.document.id);
     await openDocument(payload.document.id);
-    addMessage("assistant", "Imported", payload.document.title);
+    addMessage("assistant", "Imported", payload.document.title, false);
   } catch (error) {
-    addMessage("error", "Import failed", error.message);
+    addMessage("error", "Import failed", error.message, false);
   } finally {
     setBusy(event.submitter, false);
   }
@@ -153,48 +344,56 @@ async function uploadFile() {
   if (!file) return;
   const form = new FormData();
   form.append("file", file);
-  addMessage("user", "Upload", file.name);
+  addMessage("user", "Upload", file.name, false);
   try {
+    await ensureActiveChat();
     const payload = await api("/api/documents/upload", {
       method: "POST",
       body: form,
     });
     els.fileInput.value = "";
     await loadDocuments();
+    await attachDocument(payload.document.id);
     await openDocument(payload.document.id);
-    addMessage("assistant", "Uploaded", payload.document.title);
+    addMessage("assistant", "Uploaded", payload.document.title, false);
   } catch (error) {
-    addMessage("error", "Upload failed", error.message);
+    addMessage("error", "Upload failed", error.message, false);
   }
 }
 
 async function askQuestion(event) {
   event.preventDefault();
-  const doc = state.activeDocument;
   const question = els.questionInput.value.trim();
-  if (!doc || !question) return;
+  if (!question) return;
+  await ensureActiveChat();
 
   const selectedText = els.selectionText.value.trim();
   const provider = els.providerSelect.value;
   const model = els.modelInput.value.trim();
   els.questionInput.value = "";
-  addMessage("user", "Question", question);
-  const pending = addMessage("assistant", "Thinking", "Working...");
+  addMessage("user", "Question", question, false);
+  const pending = addMessage("assistant", "Thinking", "Working...", false);
 
   try {
     const payload = await api("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        document_id: doc.id,
+        chat_id: state.activeChat.id,
+        document_id: state.activeDocument?.id || null,
         question,
         selected_text: selectedText,
         provider: provider || null,
         model: model || null,
       }),
     });
+    state.activeChat = payload.chat;
+    els.activeChatTitle.textContent = state.activeChat.title;
     pending.querySelector(".message-meta").textContent = `${payload.provider}${payload.model ? ` - ${payload.model}` : ""}`;
     setMessageBody(pending, payload.answer, true);
+    await loadChats();
+    renderAttachedDocuments();
+    renderLibraryList();
   } catch (error) {
     pending.className = "message error";
     pending.querySelector(".message-meta").textContent = "Chat failed";
@@ -202,14 +401,14 @@ async function askQuestion(event) {
   }
 }
 
-function addMessage(kind, meta, body) {
+function addMessage(kind, meta, body, renderMath = kind === "assistant") {
   const message = window.document.createElement("div");
   message.className = `message ${kind}`;
   message.innerHTML = `
     <div class="message-meta">${escapeHtml(meta)}</div>
     <div class="message-body"></div>
   `;
-  setMessageBody(message, body, kind === "assistant");
+  setMessageBody(message, body, renderMath);
   els.chatLog.appendChild(message);
   els.chatLog.scrollTop = els.chatLog.scrollHeight;
   return message;
@@ -296,6 +495,10 @@ function setBusy(button, busy) {
   button.disabled = busy;
 }
 
+function findDocument(documentId) {
+  return state.documents.find((doc) => doc.id === documentId);
+}
+
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (char) => ({
     "&": "&amp;",
@@ -319,6 +522,15 @@ window.addEventListener("message", (event) => {
 els.urlForm.addEventListener("submit", importUrl);
 els.fileInput.addEventListener("change", uploadFile);
 els.chatForm.addEventListener("submit", askQuestion);
+els.newChat.addEventListener("click", createNewChat);
+els.addDocuments.addEventListener("click", openLibraryModal);
+els.closeLibrary.addEventListener("click", closeLibraryModal);
+els.librarySearch.addEventListener("input", renderLibraryList);
+els.libraryModal.addEventListener("click", (event) => {
+  if (event.target === els.libraryModal) {
+    closeLibraryModal();
+  }
+});
 els.openSource.addEventListener("click", () => {
   if (state.activeDocument) {
     const path = state.activeDocument.kind === "html" || state.activeDocument.kind === "text"
@@ -329,4 +541,4 @@ els.openSource.addEventListener("click", () => {
 });
 window.document.addEventListener("mouseup", captureTopSelection);
 
-loadDocuments().catch((error) => addMessage("error", "Startup failed", error.message));
+initializeApp().catch((error) => addMessage("error", "Startup failed", error.message, false));

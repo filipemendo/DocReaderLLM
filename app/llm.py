@@ -23,6 +23,7 @@ class BaseProvider:
         selected_text: str,
         context_chunks: list[str],
         document_title: str,
+        chat_history: list[dict[str, str]] | None,
         location: str | None,
         model: str | None,
     ) -> LLMAnswer:
@@ -39,19 +40,26 @@ class FallbackProvider(BaseProvider):
         selected_text: str,
         context_chunks: list[str],
         document_title: str,
+        chat_history: list[dict[str, str]] | None,
         location: str | None,
         model: str | None,
     ) -> LLMAnswer:
         selected = selected_text.strip()
         context = "\n\n".join(context_chunks[:2]).strip()
+        recent_history = chat_history[-4:] if chat_history else []
         parts = [
             "No external LLM provider is configured, so this is an extractive local response.",
             f"Question: {question.strip()}",
         ]
+        if recent_history:
+            parts.append(
+                "Recent conversation:\n"
+                + "\n".join(f"{item['role']}: {item['content']}" for item in recent_history)
+            )
         if selected:
             parts.append(f"Selected passage:\n{selected}")
         if context:
-            parts.append(f"Most relevant nearby document context from {document_title}:\n{context}")
+            parts.append(f"Most relevant retrieved document context from {document_title}:\n{context}")
         parts.append("Add an API key in .env and choose a provider for full explanatory answers.")
         return LLMAnswer("\n\n".join(parts), self.provider, None)
 
@@ -84,12 +92,12 @@ class AnthropicProvider(BaseProvider):
         model = kwargs["model"] or "claude-3-5-sonnet-latest"
         messages = build_messages(**kwargs)
         system = messages[0]["content"]
-        user = messages[1]["content"]
+        conversation = messages[1:]
         response = await self.client.messages.create(
             model=model,
             max_tokens=1200,
             system=system,
-            messages=[{"role": "user", "content": user}],
+            messages=conversation,
         )
         text = "".join(block.text for block in response.content if getattr(block, "type", None) == "text")
         return LLMAnswer(text.strip(), self.provider, model)
@@ -107,7 +115,7 @@ class GeminiProvider(BaseProvider):
     async def answer(self, **kwargs) -> LLMAnswer:
         model_name = kwargs["model"] or "gemini-1.5-flash"
         messages = build_messages(**kwargs)
-        prompt = f"{messages[0]['content']}\n\n{messages[1]['content']}"
+        prompt = "\n\n".join(f"{message['role'].upper()}:\n{message['content']}" for message in messages)
 
         def run() -> str:
             model = self.genai.GenerativeModel(model_name)
@@ -135,6 +143,7 @@ def build_messages(
     selected_text: str,
     context_chunks: list[str],
     document_title: str,
+    chat_history: list[dict[str, str]] | None,
     location: str | None,
     model: str | None,
 ) -> list[dict[str, str]]:
@@ -147,7 +156,7 @@ def build_messages(
         "and say when the context is insufficient. Keep answers concise but useful. "
         "Wrap inline mathematical expressions in \\( ... \\) and display equations in \\[ ... \\]."
     )
-    user = f"""Document: {document_title}
+    user = f"""Document scope: {document_title}
 Location: {place}
 
 Selected passage:
@@ -160,4 +169,9 @@ User question:
 {question.strip()}
 
 Answer the user's question about the selected passage. If useful, define notation, unpack assumptions, and relate the passage to the surrounding context."""
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    history = [
+        {"role": item["role"], "content": item["content"]}
+        for item in (chat_history or [])[-10:]
+        if item.get("role") in {"user", "assistant"} and item.get("content")
+    ]
+    return [{"role": "system", "content": system}, *history, {"role": "user", "content": user}]

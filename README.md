@@ -8,6 +8,9 @@ The MVP supports:
 - Importing remote HTML/PDF/EPUB/TXT documents by URL
 - Reading the document in the left pane
 - Selecting text and asking a question in the chat pane
+- Persistent chat sessions with conversational memory
+- Attaching only selected saved documents to the current chat
+- Whole-document lexical retrieval across attached documents
 - Sending selected text plus nearby document context to OpenAI, Anthropic, Gemini, or a local fallback
 
 ## Run
@@ -53,3 +56,5 @@ If no key is configured, the fallback provider returns an extractive answer usin
 ## Notes
 
 Remote HTML is fetched by the backend, sanitized, cached locally, and rendered inside a sandboxed iframe. PDF and EPUB files are served from the local cache after upload/import.
+
+Chats are saved under `.data/chats/`. Documents are saved under `.data/documents/`. A chat can attach any subset of saved documents, and retrieval for an answer searches chunks across the whole attached set.

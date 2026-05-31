@@ -25,7 +25,10 @@
 
       <main class="workspace">
         <aside class="library">
-          <div class="panel-title">Library</div>
+          <div class="side-header">
+            <div class="panel-title">Chat Documents</div>
+            <button id="add-documents" class="ghost-button compact-button" type="button" title="Add documents">Add</button>
+          </div>
           <div id="document-list" class="document-list"></div>
         </aside>
 
@@ -43,6 +46,17 @@
         </section>
 
         <aside class="chat-column">
+          <div class="chat-session-panel">
+            <div class="chat-session-header">
+              <div>
+                <div class="panel-title">Chats</div>
+                <div id="active-chat-title" class="active-chat-title">New chat</div>
+              </div>
+              <button id="new-chat" class="ghost-button compact-button" type="button" title="Start new chat">New</button>
+            </div>
+            <div id="chat-list" class="chat-list"></div>
+          </div>
+
           <div class="chat-settings">
             <select id="provider-select" title="Provider">
               <option value="">Default</option>
@@ -67,9 +81,22 @@
           </form>
         </aside>
       </main>
+
+      <div id="library-modal" class="modal hidden">
+        <div class="modal-panel">
+          <div class="modal-header">
+            <div>
+              <div class="panel-title">Saved Library</div>
+              <div class="modal-title">Add documents to this chat</div>
+            </div>
+            <button id="close-library" class="ghost-button compact-button" type="button" title="Close">Close</button>
+          </div>
+          <input id="library-search" class="library-search" type="search" placeholder="Search saved documents">
+          <div id="library-list" class="library-list"></div>
+        </div>
+      </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js"></script>
     <script>
       window.MathJax = {
         tex: {

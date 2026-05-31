@@ -27,8 +27,46 @@ class ImportUrlResponse(BaseModel):
     document: DocumentMetadata
 
 
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+    created_at: datetime
+    document_id: str | None = None
+    selected_text: str = ""
+    provider: str | None = None
+    model: str | None = None
+    context_chunks: list[str] = []
+
+
+class ChatSession(BaseModel):
+    id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    document_ids: list[str] = []
+    messages: list[ChatMessage] = []
+
+
+class ChatSummary(BaseModel):
+    id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    document_ids: list[str] = []
+    message_count: int = 0
+
+
+class CreateChatRequest(BaseModel):
+    title: str | None = None
+
+
+class AttachDocumentsRequest(BaseModel):
+    document_ids: list[str] = []
+
+
 class ChatRequest(BaseModel):
-    document_id: str
+    chat_id: str | None = None
+    document_id: str | None = None
     question: str = Field(min_length=1)
     selected_text: str = ""
     location: str | None = None
@@ -37,6 +75,7 @@ class ChatRequest(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    chat: ChatSession
     answer: str
     provider: str
     model: str | None = None
