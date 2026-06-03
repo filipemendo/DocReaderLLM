@@ -1,4 +1,4 @@
-# HTMLreaderLLM
+# DocReaderLLM
 
 A local browser-based reader that keeps technical documents and chatbot clarification in one UI.
 

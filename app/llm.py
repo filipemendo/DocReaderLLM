@@ -130,6 +130,21 @@ class AnthropicProvider(BaseProvider):
         text = "".join(block.text for block in response.content if getattr(block, "type", None) == "text")
         return LLMAnswer(text.strip(), self.provider, model)
 
+    async def stream_answer(self, **kwargs) -> AsyncIterator[str]:
+        model = self.model_name(kwargs["model"])
+        messages = build_messages(**kwargs)
+        system = messages[0]["content"]
+        conversation = messages[1:]
+        async with self.client.messages.stream(
+            model=model,
+            max_tokens=1200,
+            system=system,
+            messages=conversation,
+        ) as stream:
+            async for text in stream.text_stream:
+                if text:
+                    yield text
+
 
 class GeminiProvider(BaseProvider):
     provider = "gemini"
@@ -155,6 +170,25 @@ class GeminiProvider(BaseProvider):
 
         text = await asyncio.to_thread(run)
         return LLMAnswer(text.strip(), self.provider, model_name)
+
+    async def stream_answer(self, **kwargs) -> AsyncIterator[str]:
+        model_name = self.model_name(kwargs["model"])
+        messages = build_messages(**kwargs)
+        prompt = "\n\n".join(f"{message['role'].upper()}:\n{message['content']}" for message in messages)
+
+        def start_stream():
+            model = self.genai.GenerativeModel(model_name)
+            return iter(model.generate_content(prompt, stream=True))
+
+        iterator = await asyncio.to_thread(start_stream)
+        sentinel = object()
+        while True:
+            chunk = await asyncio.to_thread(next, iterator, sentinel)
+            if chunk is sentinel:
+                break
+            text = getattr(chunk, "text", "") or ""
+            if text:
+                yield text
 
 
 def build_llm_provider(name: str, settings: Settings) -> BaseProvider:
