@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from app.config import Settings
@@ -16,6 +17,9 @@ class LLMAnswer:
 class BaseProvider:
     provider = "base"
 
+    def model_name(self, requested_model: str | None) -> str | None:
+        return requested_model
+
     async def answer(
         self,
         *,
@@ -29,9 +33,16 @@ class BaseProvider:
     ) -> LLMAnswer:
         raise NotImplementedError
 
+    async def stream_answer(self, **kwargs) -> AsyncIterator[str]:
+        answer = await self.answer(**kwargs)
+        yield answer.text
+
 
 class FallbackProvider(BaseProvider):
     provider = "fallback"
+
+    def model_name(self, requested_model: str | None) -> str | None:
+        return None
 
     async def answer(
         self,
@@ -72,12 +83,26 @@ class OpenAIProvider(BaseProvider):
 
         self.client = AsyncOpenAI(api_key=api_key)
 
+    def model_name(self, requested_model: str | None) -> str | None:
+        return requested_model or "gpt-4.1-mini"
+
     async def answer(self, **kwargs) -> LLMAnswer:
-        model = kwargs["model"] or "gpt-4.1-mini"
+        model = self.model_name(kwargs["model"])
         messages = build_messages(**kwargs)
         response = await self.client.chat.completions.create(model=model, messages=messages)
         text = response.choices[0].message.content or ""
         return LLMAnswer(text.strip(), self.provider, model)
+
+    async def stream_answer(self, **kwargs) -> AsyncIterator[str]:
+        model = self.model_name(kwargs["model"])
+        messages = build_messages(**kwargs)
+        stream = await self.client.chat.completions.create(model=model, messages=messages, stream=True)
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+            text = chunk.choices[0].delta.content
+            if text:
+                yield text
 
 
 class AnthropicProvider(BaseProvider):
@@ -88,8 +113,11 @@ class AnthropicProvider(BaseProvider):
 
         self.client = AsyncAnthropic(api_key=api_key)
 
+    def model_name(self, requested_model: str | None) -> str | None:
+        return requested_model or "claude-3-5-sonnet-latest"
+
     async def answer(self, **kwargs) -> LLMAnswer:
-        model = kwargs["model"] or "claude-3-5-sonnet-latest"
+        model = self.model_name(kwargs["model"])
         messages = build_messages(**kwargs)
         system = messages[0]["content"]
         conversation = messages[1:]
@@ -112,8 +140,11 @@ class GeminiProvider(BaseProvider):
         genai.configure(api_key=api_key)
         self.genai = genai
 
+    def model_name(self, requested_model: str | None) -> str | None:
+        return requested_model or "gemini-1.5-flash"
+
     async def answer(self, **kwargs) -> LLMAnswer:
-        model_name = kwargs["model"] or "gemini-1.5-flash"
+        model_name = self.model_name(kwargs["model"])
         messages = build_messages(**kwargs)
         prompt = "\n\n".join(f"{message['role'].upper()}:\n{message['content']}" for message in messages)
 

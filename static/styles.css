@@ -10,6 +10,7 @@
   --accent-strong: #245747;
   --focus: #c08a2b;
   --shadow: 0 8px 22px rgba(28, 36, 30, 0.08);
+  --chat-width: 390px;
 }
 
 * {
@@ -126,7 +127,7 @@ select:focus {
 
 .workspace {
   display: grid;
-  grid-template-columns: 250px minmax(360px, 1fr) 390px;
+  grid-template-columns: 250px minmax(360px, 1fr) 7px var(--chat-width);
   min-height: 0;
 }
 
@@ -297,8 +298,34 @@ select:focus {
   justify-content: center;
 }
 
-.chat-column {
+.chat-resizer {
+  background: #edf2ed;
   border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  cursor: col-resize;
+  min-height: 0;
+  position: relative;
+}
+
+.chat-resizer::after {
+  background: #a7b1aa;
+  border-radius: 999px;
+  content: "";
+  height: 42px;
+  left: 50%;
+  opacity: 0.65;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 2px;
+}
+
+.chat-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.chat-column {
   display: grid;
   gap: 12px;
   grid-template-rows: auto auto 150px minmax(0, 1fr) auto;
@@ -382,7 +409,56 @@ select:focus {
   border-radius: 7px;
   line-height: 1.45;
   padding: 10px 11px;
-  white-space: pre-wrap;
+}
+
+.message-body {
+  overflow-wrap: anywhere;
+}
+
+.message-body p,
+.message-body ul,
+.message-body ol,
+.message-body pre {
+  margin: 0 0 0.7em;
+}
+
+.message-body p:last-child,
+.message-body ul:last-child,
+.message-body ol:last-child,
+.message-body pre:last-child {
+  margin-bottom: 0;
+}
+
+.message-body ul,
+.message-body ol {
+  padding-left: 1.25em;
+}
+
+.message-body code {
+  background: #eef2ee;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.94em;
+  padding: 0.05em 0.28em;
+}
+
+.message-body pre {
+  background: #18201c;
+  border-radius: 6px;
+  color: #f7faf6;
+  overflow-x: auto;
+  padding: 10px;
+  white-space: pre;
+}
+
+.message-body pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+.message-body a {
+  color: #1f6feb;
 }
 
 .message.user {
@@ -482,7 +558,7 @@ select:focus {
 
 @media (max-width: 1050px) {
   .workspace {
-    grid-template-columns: 210px minmax(320px, 1fr) 340px;
+    grid-template-columns: 210px minmax(320px, 1fr) 7px minmax(320px, var(--chat-width));
   }
 }
 
@@ -503,6 +579,10 @@ select:focus {
   .library,
   .chat-column {
     border: 0;
+  }
+
+  .chat-resizer {
+    display: none;
   }
 
   .reader-column {

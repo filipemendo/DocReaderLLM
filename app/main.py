@@ -1,12 +1,12 @@
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.chats import ChatStore
 from app.config import get_settings
-from app.documents import DocumentStore
-from app.llm import build_llm_provider
+from app.documents import DocumentStore, enhance_display_html
+from app.llm import BaseProvider, build_llm_provider
 from app.models import (
     AttachDocumentsRequest,
     ChatMessage,
@@ -18,6 +18,7 @@ from app.models import (
 )
 from app.retrieval import LexicalDocumentRetriever, format_retrieved_chunks
 from datetime import datetime, timezone
+import json
 
 
 settings = get_settings()
@@ -125,7 +126,7 @@ async def get_document_html(document_id: str):
     html = store.get_display_html(document_id)
     if html is None:
         raise HTTPException(status_code=404, detail="No HTML representation available")
-    return HTMLResponse(html)
+    return HTMLResponse(enhance_display_html(html))
 
 
 @app.get("/api/documents/{document_id}/file")
@@ -147,6 +148,80 @@ async def get_document_file(document_id: str):
 
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(payload: ChatRequest):
+    chat_session, provider, model_name, answer_kwargs, context_chunks = prepare_chat_answer(payload)
+    answer = await provider.answer(
+        **answer_kwargs,
+    )
+    chat_session = persist_chat_turn(
+        chat_session=chat_session,
+        payload=payload,
+        answer_text=answer.text,
+        provider=answer.provider,
+        model=answer.model,
+        context_chunks=context_chunks,
+    )
+    return ChatResponse(
+        chat=chat_session,
+        answer=answer.text,
+        provider=answer.provider,
+        model=answer.model,
+        context_chunks=context_chunks,
+    )
+
+
+@app.post("/api/chat/stream")
+async def stream_chat(payload: ChatRequest):
+    chat_session, provider, model_name, answer_kwargs, context_chunks = prepare_chat_answer(payload)
+
+    async def events():
+        answer_parts = []
+        yield sse("meta", {"provider": provider.provider, "model": model_name, "chat_id": chat_session.id})
+        try:
+            async for piece in provider.stream_answer(**answer_kwargs):
+                answer_parts.append(piece)
+                yield sse("delta", {"text": piece})
+        except Exception as exc:
+            yield sse("error", {"message": str(exc)})
+            return
+
+        answer_text = "".join(answer_parts).strip()
+        saved_chat = persist_chat_turn(
+            chat_session=chat_session,
+            payload=payload,
+            answer_text=answer_text,
+            provider=provider.provider,
+            model=model_name,
+            context_chunks=context_chunks,
+        )
+        yield sse(
+            "done",
+            {
+                "chat": saved_chat.model_dump(mode="json"),
+                "answer": answer_text,
+                "provider": provider.provider,
+                "model": model_name,
+                "context_chunks": context_chunks,
+            },
+        )
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
+@app.get("/health")
+async def health():
+    return Response("ok", media_type="text/plain")
+
+
+def document_scope_title(document_ids: list[str]) -> str:
+    titles = [metadata.title for document_id in document_ids if (metadata := store.get_metadata(document_id))]
+    if not titles:
+        return "No attached documents"
+    if len(titles) <= 3:
+        return "; ".join(titles)
+    return "; ".join(titles[:3]) + f"; and {len(titles) - 3} more"
+
+
+def prepare_chat_answer(payload: ChatRequest) -> tuple[object, BaseProvider, str | None, dict, list[str]]:
     chat_session = chat_store.require_chat(payload.chat_id)
     document = store.get_metadata(payload.document_id) if payload.document_id else None
     if payload.document_id and not document:
@@ -162,63 +237,57 @@ async def chat(payload: ChatRequest):
         top_k=6,
     )
     context_chunks = format_retrieved_chunks(retrieved)
-    document_scope = document_scope_title(chat_session.document_ids)
     history = [
         {"role": message.role, "content": message.content}
         for message in chat_session.messages
         if message.role in {"user", "assistant"}
     ]
     provider = build_llm_provider(payload.provider or settings.default_provider, settings)
-    answer = await provider.answer(
-        question=payload.question,
-        selected_text=payload.selected_text,
-        context_chunks=context_chunks,
-        document_title=document_scope,
-        chat_history=history,
-        location=payload.location,
-        model=payload.model or settings.default_model,
-    )
-    now = datetime.now(timezone.utc)
+    model_name = provider.model_name(payload.model or settings.default_model)
+    answer_kwargs = {
+        "question": payload.question,
+        "selected_text": payload.selected_text,
+        "context_chunks": context_chunks,
+        "document_title": document_scope_title(chat_session.document_ids),
+        "chat_history": history,
+        "location": payload.location,
+        "model": model_name,
+    }
+    return chat_session, provider, model_name, answer_kwargs, context_chunks
+
+
+def persist_chat_turn(
+    *,
+    chat_session,
+    payload: ChatRequest,
+    answer_text: str,
+    provider: str,
+    model: str | None,
+    context_chunks: list[str],
+):
     chat_session = chat_store.append_message(
         chat_session,
         ChatMessage(
             role="user",
             content=payload.question.strip(),
-            created_at=now,
+            created_at=datetime.now(timezone.utc),
             document_id=payload.document_id,
             selected_text=payload.selected_text,
             context_chunks=context_chunks,
         ),
     )
-    chat_session = chat_store.append_message(
+    return chat_store.append_message(
         chat_session,
         ChatMessage(
             role="assistant",
-            content=answer.text,
+            content=answer_text,
             created_at=datetime.now(timezone.utc),
-            provider=answer.provider,
-            model=answer.model,
+            provider=provider,
+            model=model,
             context_chunks=context_chunks,
         ),
     )
-    return ChatResponse(
-        chat=chat_session,
-        answer=answer.text,
-        provider=answer.provider,
-        model=answer.model,
-        context_chunks=context_chunks,
-    )
 
 
-@app.get("/health")
-async def health():
-    return Response("ok", media_type="text/plain")
-
-
-def document_scope_title(document_ids: list[str]) -> str:
-    titles = [metadata.title for document_id in document_ids if (metadata := store.get_metadata(document_id))]
-    if not titles:
-        return "No attached documents"
-    if len(titles) <= 3:
-        return "; ".join(titles)
-    return "; ".join(titles[:3]) + f"; and {len(titles) - 3} more"
+def sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"

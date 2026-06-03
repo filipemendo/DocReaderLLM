@@ -19,6 +19,7 @@ const els = {
   documentMeta: document.querySelector("#document-meta"),
   reader: document.querySelector("#reader"),
   openSource: document.querySelector("#open-source"),
+  chatResizer: document.querySelector("#chat-resizer"),
   activeChatTitle: document.querySelector("#active-chat-title"),
   chatList: document.querySelector("#chat-list"),
   newChat: document.querySelector("#new-chat"),
@@ -375,7 +376,7 @@ async function askQuestion(event) {
   const pending = addMessage("assistant", "Thinking", "Working...", false);
 
   try {
-    const payload = await api("/api/chat", {
+    const response = await fetch("/api/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -387,18 +388,60 @@ async function askQuestion(event) {
         model: model || null,
       }),
     });
-    state.activeChat = payload.chat;
-    els.activeChatTitle.textContent = state.activeChat.title;
-    pending.querySelector(".message-meta").textContent = `${payload.provider}${payload.model ? ` - ${payload.model}` : ""}`;
-    setMessageBody(pending, payload.answer, true);
-    await loadChats();
-    renderAttachedDocuments();
-    renderLibraryList();
+    if (!response.ok || !response.body) {
+      throw new Error(response.statusText || "Streaming request failed");
+    }
+    await consumeChatStream(response, pending);
   } catch (error) {
     pending.className = "message error";
     pending.querySelector(".message-meta").textContent = "Chat failed";
     setMessageBody(pending, error.message, false);
   }
+}
+
+async function consumeChatStream(response, pending) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let answer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() || "";
+    for (const rawEvent of events) {
+      const event = parseSseEvent(rawEvent);
+      if (!event) continue;
+      if (event.type === "meta") {
+        pending.querySelector(".message-meta").textContent = `${event.data.provider}${event.data.model ? ` - ${event.data.model}` : ""}`;
+        setMessageBody(pending, "", true);
+      } else if (event.type === "delta") {
+        answer += event.data.text || "";
+        setMessageBody(pending, answer, true);
+      } else if (event.type === "done") {
+        state.activeChat = event.data.chat;
+        els.activeChatTitle.textContent = state.activeChat.title;
+        setMessageBody(pending, event.data.answer || answer, true);
+        await loadChats();
+        renderAttachedDocuments();
+        renderLibraryList();
+      } else if (event.type === "error") {
+        throw new Error(event.data.message || "Streaming failed");
+      }
+    }
+  }
+}
+
+function parseSseEvent(rawEvent) {
+  const lines = rawEvent.split("\n");
+  const typeLine = lines.find((line) => line.startsWith("event:"));
+  const dataLines = lines.filter((line) => line.startsWith("data:"));
+  if (!typeLine || !dataLines.length) return null;
+  const type = typeLine.slice(6).trim();
+  const data = JSON.parse(dataLines.map((line) => line.slice(5).trimStart()).join("\n"));
+  return { type, data };
 }
 
 function addMessage(kind, meta, body, renderMath = kind === "assistant") {
@@ -416,10 +459,70 @@ function addMessage(kind, meta, body, renderMath = kind === "assistant") {
 
 function setMessageBody(message, body, renderMath) {
   const target = message.querySelector(".message-body");
-  target.textContent = body;
   if (renderMath) {
+    target.innerHTML = renderMarkdown(body);
     typesetMath(target);
+  } else {
+    target.textContent = body;
   }
+}
+
+function renderMarkdown(text) {
+  const { text: protectedText, segments } = protectMathSegments(String(text || ""));
+  const blocks = protectedText.replace(/\r\n/g, "\n").split(/\n{2,}/);
+  const html = blocks.map((block) => renderMarkdownBlock(block)).join("");
+  return restoreMathSegments(html, segments);
+}
+
+function renderMarkdownBlock(block) {
+  const trimmed = block.trim();
+  if (!trimmed) return "";
+  const codeMatch = trimmed.match(/^```[a-zA-Z0-9_-]*\n([\s\S]*?)```$/);
+  if (codeMatch) {
+    return `<pre><code>${escapeHtml(codeMatch[1])}</code></pre>`;
+  }
+  const lines = trimmed.split("\n");
+  if (lines.every((line) => /^\s*[-*]\s+/.test(line))) {
+    return `<ul>${lines.map((line) => `<li>${renderMarkdownInline(line.replace(/^\s*[-*]\s+/, ""))}</li>`).join("")}</ul>`;
+  }
+  if (lines.every((line) => /^\s*\d+\.\s+/.test(line))) {
+    return `<ol>${lines.map((line) => `<li>${renderMarkdownInline(line.replace(/^\s*\d+\.\s+/, ""))}</li>`).join("")}</ol>`;
+  }
+  return `<p>${renderMarkdownInline(trimmed).replace(/\n/g, "<br>")}</p>`;
+}
+
+function renderMarkdownInline(text) {
+  const codeSegments = [];
+  let value = escapeHtml(text).replace(/`([^`]+)`/g, (_match, code) => {
+    const token = `@@CODE${codeSegments.length}@@`;
+    codeSegments.push(`<code>${code}</code>`);
+    return token;
+  });
+  value = value.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+|#[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  value = value.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  value = value.replace(/(^|[^\*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  codeSegments.forEach((segment, index) => {
+    value = value.replace(`@@CODE${index}@@`, segment);
+  });
+  return value;
+}
+
+function protectMathSegments(text) {
+  const segments = [];
+  const protectedText = text.replace(/(\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$\$[\s\S]*?\$\$|\$[^$\n]+\$)/g, (match) => {
+    const token = `@@MATH${segments.length}@@`;
+    segments.push(escapeHtml(match));
+    return token;
+  });
+  return { text: protectedText, segments };
+}
+
+function restoreMathSegments(html, segments) {
+  let restored = html;
+  segments.forEach((segment, index) => {
+    restored = restored.replaceAll(`@@MATH${index}@@`, segment);
+  });
+  return restored;
 }
 
 function setSelectionText(rawText) {
@@ -513,6 +616,39 @@ function formatCount(value) {
   return new Intl.NumberFormat().format(value || 0);
 }
 
+function initializeChatResizer() {
+  const savedWidth = Number.parseInt(window.localStorage.getItem("chatWidth") || "", 10);
+  if (savedWidth) {
+    setChatWidth(savedWidth);
+  }
+  els.chatResizer.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    window.document.body.classList.add("chat-resizing");
+    els.chatResizer.setPointerCapture(event.pointerId);
+  });
+  els.chatResizer.addEventListener("pointermove", (event) => {
+    if (!els.chatResizer.hasPointerCapture(event.pointerId)) return;
+    const workspace = els.chatResizer.parentElement;
+    const bounds = workspace.getBoundingClientRect();
+    const width = bounds.right - event.clientX;
+    setChatWidth(width);
+  });
+  els.chatResizer.addEventListener("pointerup", (event) => {
+    if (els.chatResizer.hasPointerCapture(event.pointerId)) {
+      els.chatResizer.releasePointerCapture(event.pointerId);
+    }
+    window.document.body.classList.remove("chat-resizing");
+    window.localStorage.setItem("chatWidth", getComputedStyle(window.document.documentElement).getPropertyValue("--chat-width"));
+  });
+}
+
+function setChatWidth(width) {
+  const parsed = Number.parseInt(width, 10);
+  if (!Number.isFinite(parsed)) return;
+  const clamped = Math.max(300, Math.min(720, parsed));
+  window.document.documentElement.style.setProperty("--chat-width", `${clamped}px`);
+}
+
 window.addEventListener("message", (event) => {
   if (event.data?.type === "reader-selection" && event.data.text) {
     setSelectionText(event.data.text);
@@ -533,12 +669,13 @@ els.libraryModal.addEventListener("click", (event) => {
 });
 els.openSource.addEventListener("click", () => {
   if (state.activeDocument) {
-    const path = state.activeDocument.kind === "html" || state.activeDocument.kind === "text"
+    const path = state.activeDocument.kind === "html" || state.activeDocument.kind === "text" || state.activeDocument.kind === "epub"
       ? `/api/documents/${state.activeDocument.id}/html`
       : `/api/documents/${state.activeDocument.id}/file`;
     window.open(path, "_blank", "noopener");
   }
 });
 window.document.addEventListener("mouseup", captureTopSelection);
+initializeChatResizer();
 
 initializeApp().catch((error) => addMessage("error", "Startup failed", error.message, false));

@@ -3,12 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import posixpath
 import re
 import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urldefrag, urlparse
 
 import bleach
 import fitz
@@ -77,7 +78,7 @@ HTML_TAGS = set(bleach.sanitizer.ALLOWED_TAGS).union(
 )
 HTML_ATTRIBUTES = {
     "*": ["aria-label", "class", "id", "title"],
-    "a": ["href", "name", "rel", "title"],
+    "a": ["href", "name", "rel", "target", "title"],
     "img": ["alt", "height", "src", "title", "width"],
     "td": ["colspan", "rowspan"],
     "th": ["colspan", "rowspan", "scope"],
@@ -243,12 +244,18 @@ def extract_epub(path: Path) -> tuple[str, str | None, str | None]:
     title = title_items[0][0] if title_items else readable_title(path.name)
     html_parts = []
     text_parts = []
-    for item in book.get_items():
-        if item.get_type() == ITEM_DOCUMENT:
-            html = item.get_content().decode("utf-8", errors="replace")
-            soup = BeautifulSoup(html, "html.parser")
-            html_parts.append(str(soup.body or soup))
-            text_parts.append(soup.get_text("\n", strip=True))
+    document_items = [item for item in book.get_items() if item.get_type() == ITEM_DOCUMENT]
+    href_to_anchor = {item.get_name(): f"epub-item-{slugify(item.get_id() or item.get_name())}" for item in document_items}
+
+    for item in document_items:
+        html = item.get_content().decode("utf-8", errors="replace")
+        soup = BeautifulSoup(html, "html.parser")
+        rewrite_epub_links(soup, item.get_name(), href_to_anchor)
+        body = soup.body or soup
+        wrapper = soup.new_tag("section", id=href_to_anchor[item.get_name()])
+        wrapper.append(body)
+        html_parts.append(str(wrapper))
+        text_parts.append(soup.get_text("\n", strip=True))
 
     display_html = build_display_html(
         title=title,
@@ -332,6 +339,36 @@ def build_display_html(title: str, body: str, base_url: str | None) -> str:
         window.parent.postMessage({{ type: "reader-selection", text }}, "*");
       }}
     }});
+
+    function findAnchor(id) {{
+      const decoded = decodeURIComponent(String(id || "").replace(/^#/, ""));
+      if (!decoded) return null;
+      return Array.from(document.querySelectorAll("[id], [name]")).find((element) =>
+        element.id === decoded ||
+        element.getAttribute("name") === decoded ||
+        element.id.endsWith(decoded) ||
+        String(element.getAttribute("name") || "").endsWith(decoded)
+      );
+    }}
+
+    document.addEventListener("click", (event) => {{
+      const link = event.target.closest ? event.target.closest("a[href]") : null;
+      if (!link) return;
+      const href = link.getAttribute("href") || "";
+      if (/^(https?:|mailto:)/i.test(href)) {{
+        link.setAttribute("target", "_blank");
+        link.setAttribute("rel", "noopener noreferrer");
+        return;
+      }}
+      const hash = href.includes("#") ? href.slice(href.indexOf("#")) : href;
+      if (!hash.startsWith("#")) return;
+      const target = findAnchor(hash);
+      if (target) {{
+        event.preventDefault();
+        target.scrollIntoView({{ behavior: "smooth", block: "start" }});
+        try {{ history.replaceState(null, "", hash); }} catch (error) {{}}
+      }}
+    }});
   </script>
 </head>
 <body>{body}</body>
@@ -341,6 +378,47 @@ def build_display_html(title: str, body: str, base_url: str | None) -> str:
 def text_to_display_html(text: str) -> str:
     escaped = bleach.clean(text)
     return build_display_html("Text document", f"<pre>{escaped}</pre>", None)
+
+
+def enhance_display_html(html: str) -> str:
+    if "function findAnchor" in html:
+        return html
+    script = """
+<script>
+  function findAnchor(id) {
+    const decoded = decodeURIComponent(String(id || "").replace(/^#/, ""));
+    if (!decoded) return null;
+    return Array.from(document.querySelectorAll("[id], [name]")).find((element) =>
+      element.id === decoded ||
+      element.getAttribute("name") === decoded ||
+      element.id.endsWith(decoded) ||
+      String(element.getAttribute("name") || "").endsWith(decoded)
+    );
+  }
+
+  document.addEventListener("click", (event) => {
+    const link = event.target.closest ? event.target.closest("a[href]") : null;
+    if (!link) return;
+    const href = link.getAttribute("href") || "";
+    if (/^(https?:|mailto:)/i.test(href)) {
+      link.setAttribute("target", "_blank");
+      link.setAttribute("rel", "noopener noreferrer");
+      return;
+    }
+    const hash = href.includes("#") ? href.slice(href.indexOf("#")) : href;
+    if (!hash.startsWith("#")) return;
+    const target = findAnchor(hash);
+    if (target) {
+      event.preventDefault();
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+      try { history.replaceState(null, "", hash); } catch (error) {}
+    }
+  });
+</script>
+"""
+    if "</body>" in html:
+        return html.replace("</body>", f"{script}</body>", 1)
+    return f"{html}{script}"
 
 
 def normalize_text(text: str) -> str:
@@ -376,3 +454,27 @@ def infer_filename_from_url(url: str, content_type: str | None) -> str:
 def readable_title(name: str) -> str:
     stem = Path(name).stem
     return re.sub(r"[_-]+", " ", stem).strip().title() or "Untitled document"
+
+
+def rewrite_epub_links(soup: BeautifulSoup, item_name: str, href_to_anchor: dict[str, str]) -> None:
+    item_dir = posixpath.dirname(item_name)
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        parsed = urlparse(href)
+        if parsed.scheme in {"http", "https", "mailto"}:
+            link["target"] = "_blank"
+            link["rel"] = "noopener noreferrer"
+            continue
+        target_path, fragment = urldefrag(href)
+        normalized_path = posixpath.normpath(posixpath.join(item_dir, target_path)) if target_path else item_name
+        anchor = href_to_anchor.get(normalized_path)
+        if anchor and fragment:
+            link["href"] = f"#{fragment}"
+        elif anchor:
+            link["href"] = f"#{anchor}"
+        elif fragment:
+            link["href"] = f"#{fragment}"
+
+
+def slugify(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_-]+", "-", value).strip("-") or uuid.uuid4().hex
