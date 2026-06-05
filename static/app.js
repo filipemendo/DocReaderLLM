@@ -186,7 +186,7 @@ async function renderReader(doc) {
   els.reader.className = "reader";
   els.reader.innerHTML = "";
 
-  if (doc.kind === "html" || doc.kind === "text" || doc.kind === "epub") {
+  if (doc.kind === "html" || doc.kind === "markdown" || doc.kind === "text" || doc.kind === "epub") {
     const frame = window.document.createElement("iframe");
     frame.setAttribute("sandbox", "allow-scripts allow-popups allow-forms");
     frame.src = `/api/documents/${doc.id}/html`;
@@ -669,7 +669,7 @@ els.libraryModal.addEventListener("click", (event) => {
 });
 els.openSource.addEventListener("click", () => {
   if (state.activeDocument) {
-    const path = state.activeDocument.kind === "html" || state.activeDocument.kind === "text" || state.activeDocument.kind === "epub"
+    const path = state.activeDocument.kind === "html" || state.activeDocument.kind === "markdown" || state.activeDocument.kind === "text" || state.activeDocument.kind === "epub"
       ? `/api/documents/${state.activeDocument.id}/html`
       : `/api/documents/${state.activeDocument.id}/file`;
     window.open(path, "_blank", "noopener");

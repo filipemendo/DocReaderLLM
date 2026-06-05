@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, HttpUrl
 
 
-DocumentKind = Literal["pdf", "epub", "html", "text", "unknown"]
+DocumentKind = Literal["pdf", "epub", "html", "markdown", "text", "unknown"]
 
 
 class DocumentMetadata(BaseModel):

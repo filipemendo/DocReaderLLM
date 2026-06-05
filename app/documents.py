@@ -7,9 +7,10 @@ import posixpath
 import re
 import shutil
 import uuid
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urldefrag, urlparse
+from urllib.parse import quote, urldefrag, urljoin, urlparse
 
 import bleach
 import fitz
@@ -31,6 +32,7 @@ HTML_TAGS = set(bleach.sanitizer.ALLOWED_TAGS).union(
         "caption",
         "code",
         "dd",
+        "del",
         "details",
         "div",
         "dl",
@@ -61,6 +63,7 @@ HTML_TAGS = set(bleach.sanitizer.ALLOWED_TAGS).union(
         "ol",
         "p",
         "pre",
+        "s",
         "section",
         "span",
         "strong",
@@ -83,6 +86,8 @@ HTML_ATTRIBUTES = {
     "td": ["colspan", "rowspan"],
     "th": ["colspan", "rowspan", "scope"],
 }
+
+GITHUB_HOSTS = {"github.com", "www.github.com"}
 
 
 class DocumentStore:
@@ -128,6 +133,8 @@ class DocumentStore:
         )
 
     async def import_url(self, url: str) -> DocumentMetadata:
+        original_url = url
+        url = normalize_import_url(url)
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"}:
             raise ValueError("Only http and https URLs are supported")
@@ -155,10 +162,11 @@ class DocumentStore:
             doc_id=doc_id,
             source_type="url",
             source_name=filename,
-            source_url=str(response.url),
+            source_url=original_url if original_url != url else str(response.url),
             mime_type=response.headers.get("content-type"),
             kind=kind,
             original_path=original_path,
+            render_base_url=markdown_render_base_url(original_url) or str(response.url),
         )
 
     def get_metadata(self, document_id: str) -> DocumentMetadata | None:
@@ -189,8 +197,9 @@ class DocumentStore:
         mime_type: str | None,
         kind: DocumentKind,
         original_path: Path,
+        render_base_url: str | None = None,
     ) -> DocumentMetadata:
-        text, display_html, title = extract_document(original_path, kind, source_url)
+        text, display_html, title = extract_document(original_path, kind, render_base_url or source_url)
         if display_html:
             (self._doc_dir(doc_id) / "display.html").write_text(display_html)
         (self._doc_dir(doc_id) / "text.txt").write_text(text)
@@ -222,6 +231,9 @@ def extract_document(path: Path, kind: DocumentKind, source_url: str | None) -> 
     if kind == "html":
         html = path.read_text(errors="replace")
         return extract_html(html, source_url)
+    if kind == "markdown":
+        markdown = path.read_text(errors="replace")
+        return extract_markdown(markdown, source_url, path.name)
     text = path.read_text(errors="replace")
     return normalize_text(text), text_to_display_html(text), readable_title(path.name)
 
@@ -274,6 +286,20 @@ def extract_html(html: str, source_url: str | None) -> tuple[str, str | None, st
     display = build_display_html(title=title or "Imported HTML", body=sanitize_html(str(body), source_url), base_url=source_url)
     text = normalize_text(body.get_text("\n", strip=True))
     return text, display, title
+
+
+def extract_markdown(markdown: str, source_url: str | None, source_name: str) -> tuple[str, str | None, str | None]:
+    from markdown_it import MarkdownIt
+
+    title = markdown_title(markdown) or readable_title(source_name)
+    renderer = MarkdownIt("commonmark", {"html": False})
+    try:
+        renderer.enable(["table", "strikethrough"])
+    except Exception:
+        pass
+    rendered = enhance_markdown_html(renderer.render(strip_frontmatter(markdown)), source_url)
+    body = sanitize_html(rendered, source_url)
+    return normalize_text(strip_frontmatter(markdown)), build_display_html(title, body, source_url), title
 
 
 def sanitize_html(html: str, base_url: str | None) -> str:
@@ -437,7 +463,9 @@ def infer_kind(filename: str, mime_type: str | None) -> DocumentKind:
         return "epub"
     if suffix in {".html", ".htm"} or mime in {"text/html", "application/xhtml+xml"}:
         return "html"
-    if suffix in {".txt", ".md"} or mime.startswith("text/"):
+    if suffix in {".md", ".markdown"} or mime in {"text/markdown", "text/x-markdown"}:
+        return "markdown"
+    if suffix in {".txt"} or mime.startswith("text/"):
         return "text"
     return "unknown"
 
@@ -446,7 +474,8 @@ def infer_filename_from_url(url: str, content_type: str | None) -> str:
     parsed = urlparse(url)
     name = Path(parsed.path).name or hashlib.sha1(url.encode()).hexdigest()[:12]
     if "." not in name:
-        extension = mimetypes.guess_extension((content_type or "").split(";")[0].strip()) or ".html"
+        content_mime = (content_type or "").split(";")[0].strip()
+        extension = mimetypes.guess_extension(content_mime) or (".md" if "markdown" in content_mime else ".html")
         name = f"{name}{extension}"
     return name
 
@@ -478,3 +507,115 @@ def rewrite_epub_links(soup: BeautifulSoup, item_name: str, href_to_anchor: dict
 
 def slugify(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]+", "-", value).strip("-") or uuid.uuid4().hex
+
+
+def normalize_import_url(url: str) -> str:
+    raw = github_raw_markdown_url(url)
+    return raw or url
+
+
+def github_raw_markdown_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if host == "raw.githubusercontent.com" and parsed.path.lower().endswith((".md", ".markdown")):
+        return url
+    if host not in GITHUB_HOSTS or not parsed.path.lower().endswith((".md", ".markdown")):
+        return None
+
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 5 or parts[2] != "blob":
+        return None
+    owner, repo, _blob, branch = parts[:4]
+    file_path = "/".join(parts[4:])
+    encoded_path = "/".join(quote(part) for part in file_path.split("/"))
+    return f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{encoded_path}"
+
+
+def markdown_render_base_url(url: str | None) -> str | None:
+    if not url:
+        return None
+    raw = github_raw_markdown_url(url)
+    if raw:
+        return raw
+    parsed = urlparse(url)
+    if parsed.netloc.lower() == "raw.githubusercontent.com" and parsed.path.lower().endswith((".md", ".markdown")):
+        return url
+    return url
+
+
+def strip_frontmatter(markdown: str) -> str:
+    return re.sub(r"\A---\s*\n.*?\n---\s*\n", "", markdown, count=1, flags=re.DOTALL)
+
+
+def markdown_title(markdown: str) -> str | None:
+    frontmatter = re.match(r"\A---\s*\n(.*?)\n---\s*\n", markdown, flags=re.DOTALL)
+    if frontmatter:
+        title = re.search(r"^title:\s*[\"']?(.+?)[\"']?\s*$", frontmatter.group(1), flags=re.MULTILINE)
+        if title:
+            return title.group(1).strip()
+    heading = re.search(r"^#\s+(.+?)\s*$", markdown, flags=re.MULTILINE)
+    return heading.group(1).strip() if heading else None
+
+
+def enhance_markdown_html(html: str, source_url: str | None) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    add_markdown_heading_ids(soup)
+    rewrite_markdown_resource_links(soup, source_url)
+    return str(soup)
+
+
+def rewrite_markdown_resource_links(soup: BeautifulSoup, source_url: str | None) -> None:
+    if not source_url:
+        return
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        if href.startswith("#") or urlparse(href).scheme:
+            continue
+        link["href"] = resolve_markdown_url(source_url, href)
+    for image in soup.find_all("img", src=True):
+        src = image["src"]
+        if urlparse(src).scheme or src.startswith("data:"):
+            continue
+        image["src"] = resolve_markdown_url(source_url, src, raw_image=True)
+
+
+def add_markdown_heading_ids(soup: BeautifulSoup) -> None:
+    seen = Counter()
+    for heading in soup.find_all(re.compile(r"^h[1-6]$")):
+        if heading.get("id"):
+            continue
+        base = github_heading_slug(heading.get_text(" ", strip=True))
+        count = seen[base]
+        seen[base] += 1
+        heading["id"] = base if count == 0 else f"{base}-{count}"
+
+
+def github_heading_slug(text: str) -> str:
+    value = text.strip().lower()
+    value = re.sub(r"<[^>]+>", "", value)
+    value = re.sub(r"[^\w\s-]", "", value, flags=re.UNICODE)
+    value = re.sub(r"\s+", "-", value)
+    value = re.sub(r"-+", "-", value).strip("-")
+    return value or "section"
+
+
+def resolve_markdown_url(source_url: str, target: str, raw_image: bool = False) -> str:
+    parsed = urlparse(source_url)
+    if parsed.netloc.lower() == "raw.githubusercontent.com":
+        resolved = urljoin(source_url, target)
+        if raw_image:
+            return resolved
+        return github_web_url_from_raw(resolved) or resolved
+    return urljoin(source_url, target)
+
+
+def github_web_url_from_raw(raw_url: str) -> str | None:
+    parsed = urlparse(raw_url)
+    if parsed.netloc.lower() != "raw.githubusercontent.com":
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 4:
+        return None
+    owner, repo, branch = parts[:3]
+    file_path = "/".join(parts[3:])
+    return f"https://github.com/{owner}/{repo}/blob/{branch}/{file_path}"

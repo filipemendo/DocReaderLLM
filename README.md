@@ -4,8 +4,9 @@ A local browser-based reader that keeps technical documents and chatbot clarific
 
 The MVP supports:
 
-- Uploading PDF, EPUB, HTML, and plain text files
-- Importing remote HTML/PDF/EPUB/TXT documents by URL
+- Uploading PDF, EPUB, HTML, Markdown, and plain text files
+- Importing remote HTML/PDF/EPUB/Markdown/TXT documents by URL
+- Importing GitHub Markdown pages from `github.com/.../blob/.../*.md` as raw Markdown
 - Reading the document in the left pane
 - Selecting text and asking a question in the chat pane
 - Persistent chat sessions with conversational memory

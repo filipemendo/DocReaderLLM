@@ -5,6 +5,7 @@ httpx==0.28.1
 pydantic-settings==2.7.1
 beautifulsoup4==4.12.3
 bleach==6.2.0
+markdown-it-py==3.0.0
 PyMuPDF==1.25.1
 ebooklib==0.18
 openai==1.59.7
