@@ -15,6 +15,7 @@ from app.models import (
     CreateChatRequest,
     ImportUrlRequest,
     ImportUrlResponse,
+    RenameChatRequest,
 )
 from app.retrieval import LexicalDocumentRetriever, format_retrieved_chunks
 from datetime import datetime, timezone
@@ -22,7 +23,7 @@ import json
 
 
 settings = get_settings()
-store = DocumentStore(settings.data_dir)
+store = DocumentStore(settings.data_dir, settings.remote_user_agent)
 chat_store = ChatStore(settings.data_dir)
 retriever = LexicalDocumentRetriever(store)
 
@@ -64,6 +65,14 @@ async def get_chat(chat_id: str):
     if not chat:
         raise HTTPException(status_code=404, detail="Chat not found")
     return {"chat": chat}
+
+
+@app.patch("/api/chats/{chat_id}")
+async def rename_chat(chat_id: str, payload: RenameChatRequest):
+    chat = chat_store.get_chat(chat_id)
+    if not chat:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    return {"chat": chat_store.rename_chat(chat, payload.title)}
 
 
 @app.post("/api/chats/{chat_id}/documents")

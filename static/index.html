@@ -10,6 +10,7 @@
     <div class="shell">
       <header class="topbar">
         <div class="brand">
+          <button id="chat-drawer-toggle" class="ghost-button compact-button history-toggle" type="button" title="Open chat history" aria-controls="chat-drawer" aria-expanded="false">Chats</button>
           <span class="brand-mark">H</span>
           <span>HTMLreaderLLM</span>
         </div>
@@ -22,6 +23,21 @@
           <input id="file-input" type="file" accept=".pdf,.epub,.html,.htm,.txt,.md,.markdown,application/pdf,application/epub+zip,text/html,text/markdown,text/plain">
         </label>
       </header>
+
+      <aside id="chat-drawer" class="chat-drawer" aria-hidden="true">
+        <div class="drawer-header">
+          <div>
+            <div class="panel-title">Chat History</div>
+            <div class="drawer-title">Saved chats</div>
+          </div>
+          <button id="pin-chat-drawer" class="ghost-button compact-button" type="button" title="Pin chat history">Pin</button>
+        </div>
+        <input id="chat-search" class="chat-search" type="search" placeholder="Search chats">
+        <button id="drawer-new-chat" class="drawer-new-chat" type="button">New chat</button>
+        <div id="chat-list" class="chat-list"></div>
+      </aside>
+      <div id="chat-drawer-resizer" class="chat-drawer-resizer" title="Resize chat history"></div>
+      <div id="chat-drawer-backdrop" class="chat-drawer-backdrop"></div>
 
       <main class="workspace">
         <aside class="library">
@@ -51,12 +67,11 @@
           <div class="chat-session-panel">
             <div class="chat-session-header">
               <div>
-                <div class="panel-title">Chats</div>
+                <div class="panel-title">Current Chat</div>
                 <div id="active-chat-title" class="active-chat-title">New chat</div>
               </div>
               <button id="new-chat" class="ghost-button compact-button" type="button" title="Start new chat">New</button>
             </div>
-            <div id="chat-list" class="chat-list"></div>
           </div>
 
           <div class="chat-settings">

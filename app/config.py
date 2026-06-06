@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     default_model: str | None = None
     max_upload_mb: int = 100
     max_remote_mb: int = 100
+    remote_user_agent: str = (
+        "DocReaderLLM/1.0 "
+        "(https://github.com/filipemendo/DocReaderLLM; local research document reader)"
+    )
 
 
 @lru_cache

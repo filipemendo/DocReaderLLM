@@ -75,6 +75,11 @@ class ChatStore:
         chat.document_ids = [item for item in chat.document_ids if item != document_id]
         return self.save_chat(chat)
 
+    def rename_chat(self, chat: ChatSession, title: str) -> ChatSession:
+        normalized = re.sub(r"\s+", " ", title).strip()
+        chat.title = normalized[:120] or "New chat"
+        return self.save_chat(chat)
+
     def append_message(self, chat: ChatSession, message: ChatMessage) -> ChatSession:
         chat.messages.append(message)
         if chat.title == "New chat" and message.role == "user":

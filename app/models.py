@@ -60,6 +60,10 @@ class CreateChatRequest(BaseModel):
     title: str | None = None
 
 
+class RenameChatRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+
 class AttachDocumentsRequest(BaseModel):
     document_ids: list[str] = []
 

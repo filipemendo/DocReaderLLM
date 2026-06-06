@@ -6,6 +6,7 @@ The MVP supports:
 
 - Uploading PDF, EPUB, HTML, Markdown, and plain text files
 - Importing remote HTML/PDF/EPUB/Markdown/TXT documents by URL
+- Importing Wikipedia articles through Wikimedia's article-only REST HTML endpoint
 - Importing GitHub Markdown pages from `github.com/.../blob/.../*.md` as raw Markdown
 - Reading the document in the left pane
 - Selecting text and asking a question in the chat pane
@@ -57,5 +58,13 @@ If no key is configured, the fallback provider returns an extractive answer usin
 ## Notes
 
 Remote HTML is fetched by the backend, sanitized, cached locally, and rendered inside a sandboxed iframe. PDF and EPUB files are served from the local cache after upload/import.
+
+Some sites, including Wikipedia, require import clients to identify themselves. Set a descriptive user agent in `.env`, preferably with an email address or project URL:
+
+```bash
+REMOTE_USER_AGENT="DocReaderLLM/1.0 (https://github.com/filipemendo/DocReaderLLM; local research reader)"
+```
+
+Wikipedia imports do not require an API key. Regular article URLs are detected automatically and fetched through Wikimedia's public REST HTML endpoint to omit site navigation and other browser-page clutter.
 
 Chats are saved under `.data/chats/`. Documents are saved under `.data/documents/`. A chat can attach any subset of saved documents, and retrieval for an answer searches chunks across the whole attached set.

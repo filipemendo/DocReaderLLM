@@ -3,9 +3,18 @@ const state = {
   chats: [],
   activeChat: null,
   activeDocument: null,
+  chatDrawerOpen: false,
+  chatDrawerPinned: false,
 };
 
 const els = {
+  chatDrawerToggle: document.querySelector("#chat-drawer-toggle"),
+  chatDrawer: document.querySelector("#chat-drawer"),
+  pinChatDrawer: document.querySelector("#pin-chat-drawer"),
+  chatDrawerResizer: document.querySelector("#chat-drawer-resizer"),
+  chatDrawerBackdrop: document.querySelector("#chat-drawer-backdrop"),
+  chatSearch: document.querySelector("#chat-search"),
+  drawerNewChat: document.querySelector("#drawer-new-chat"),
   urlForm: document.querySelector("#url-form"),
   urlInput: document.querySelector("#url-input"),
   fileInput: document.querySelector("#file-input"),
@@ -77,12 +86,15 @@ async function createNewChat() {
   });
   await loadChats();
   await openChat(payload.chat.id, { openFirstDocument: false });
+  if (!state.chatDrawerPinned) {
+    closeChatDrawer();
+  }
 }
 
 async function openChat(chatId, options = {}) {
   const payload = await api(`/api/chats/${chatId}`);
   state.activeChat = payload.chat;
-  els.activeChatTitle.textContent = state.activeChat.title;
+  setActiveChatTitle(state.activeChat.title);
   renderChatList();
   renderAttachedDocuments();
   renderChatMessages();
@@ -97,13 +109,20 @@ async function openChat(chatId, options = {}) {
   }
 }
 
+function setActiveChatTitle(title) {
+  els.activeChatTitle.textContent = title || "New chat";
+  els.activeChatTitle.title = "Double-click to rename";
+}
+
 function renderChatList() {
   els.chatList.innerHTML = "";
-  if (!state.chats.length) {
-    els.chatList.innerHTML = `<div class="empty-copy">No saved chats yet.</div>`;
+  const query = els.chatSearch.value.trim().toLowerCase();
+  const chats = state.chats.filter((chat) => !query || chat.title.toLowerCase().includes(query));
+  if (!chats.length) {
+    els.chatList.innerHTML = `<div class="empty-copy">${state.chats.length ? "No chats match this search." : "No saved chats yet."}</div>`;
     return;
   }
-  state.chats.forEach((chat) => {
+  chats.forEach((chat) => {
     const item = window.document.createElement("button");
     item.type = "button";
     item.className = `chat-item ${state.activeChat?.id === chat.id ? "active" : ""}`;
@@ -111,9 +130,62 @@ function renderChatList() {
       <div class="chat-item-title">${escapeHtml(chat.title)}</div>
       <div class="chat-item-meta">${chat.message_count} messages - ${chat.document_ids.length} docs</div>
     `;
-    item.addEventListener("click", () => openChat(chat.id));
+    item.addEventListener("click", async () => {
+      await openChat(chat.id);
+      if (!state.chatDrawerPinned) {
+        closeChatDrawer();
+      }
+    });
     els.chatList.appendChild(item);
   });
+}
+
+function beginRenameActiveChat() {
+  if (!state.activeChat || els.activeChatTitle.querySelector("input")) return;
+  const previousTitle = state.activeChat.title || "New chat";
+  const input = window.document.createElement("input");
+  input.className = "chat-title-input";
+  input.type = "text";
+  input.value = previousTitle;
+  input.maxLength = 120;
+  els.activeChatTitle.replaceChildren(input);
+  input.focus();
+  input.select();
+
+  let finished = false;
+  const finish = async (save) => {
+    if (finished) return;
+    finished = true;
+    const nextTitle = input.value.trim();
+    if (!save || !nextTitle || nextTitle === previousTitle) {
+      setActiveChatTitle(previousTitle);
+      return;
+    }
+    try {
+      const payload = await api(`/api/chats/${state.activeChat.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: nextTitle }),
+      });
+      state.activeChat = payload.chat;
+      setActiveChatTitle(state.activeChat.title);
+      await loadChats();
+    } catch (error) {
+      setActiveChatTitle(previousTitle);
+      addMessage("error", "Rename failed", error.message, false);
+    }
+  };
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      finish(true);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      finish(false);
+    }
+  });
+  input.addEventListener("blur", () => finish(false));
 }
 
 function renderAttachedDocuments() {
@@ -422,7 +494,7 @@ async function consumeChatStream(response, pending) {
         setMessageBody(pending, answer, true);
       } else if (event.type === "done") {
         state.activeChat = event.data.chat;
-        els.activeChatTitle.textContent = state.activeChat.title;
+        setActiveChatTitle(state.activeChat.title);
         setMessageBody(pending, event.data.answer || answer, true);
         await loadChats();
         renderAttachedDocuments();
@@ -616,6 +688,84 @@ function formatCount(value) {
   return new Intl.NumberFormat().format(value || 0);
 }
 
+function initializeChatDrawer() {
+  const savedWidth = Number.parseInt(window.localStorage.getItem("chatDrawerWidth") || "", 10);
+  if (savedWidth) {
+    setChatDrawerWidth(savedWidth);
+  }
+  state.chatDrawerPinned = window.localStorage.getItem("chatDrawerPinned") === "true";
+  state.chatDrawerOpen = state.chatDrawerPinned;
+  applyChatDrawerState();
+
+  els.chatDrawerResizer.addEventListener("pointerdown", (event) => {
+    if (!state.chatDrawerPinned) return;
+    event.preventDefault();
+    window.document.body.classList.add("chat-resizing");
+    els.chatDrawerResizer.setPointerCapture(event.pointerId);
+  });
+  els.chatDrawerResizer.addEventListener("pointermove", (event) => {
+    if (!els.chatDrawerResizer.hasPointerCapture(event.pointerId)) return;
+    setChatDrawerWidth(event.clientX);
+  });
+  els.chatDrawerResizer.addEventListener("pointerup", (event) => {
+    if (els.chatDrawerResizer.hasPointerCapture(event.pointerId)) {
+      els.chatDrawerResizer.releasePointerCapture(event.pointerId);
+    }
+    window.document.body.classList.remove("chat-resizing");
+    window.localStorage.setItem(
+      "chatDrawerWidth",
+      getComputedStyle(window.document.documentElement).getPropertyValue("--chat-drawer-width"),
+    );
+  });
+}
+
+function toggleChatDrawer() {
+  if (state.chatDrawerPinned) {
+    state.chatDrawerPinned = false;
+    state.chatDrawerOpen = false;
+    persistChatDrawerPin();
+  } else {
+    state.chatDrawerOpen = !state.chatDrawerOpen;
+  }
+  applyChatDrawerState();
+}
+
+function closeChatDrawer() {
+  if (state.chatDrawerPinned) return;
+  state.chatDrawerOpen = false;
+  applyChatDrawerState();
+}
+
+function toggleChatDrawerPin() {
+  state.chatDrawerPinned = !state.chatDrawerPinned;
+  state.chatDrawerOpen = true;
+  persistChatDrawerPin();
+  applyChatDrawerState();
+}
+
+function persistChatDrawerPin() {
+  window.localStorage.setItem("chatDrawerPinned", String(state.chatDrawerPinned));
+}
+
+function applyChatDrawerState() {
+  window.document.body.classList.toggle("chat-drawer-open", state.chatDrawerOpen);
+  window.document.body.classList.toggle("chat-drawer-pinned", state.chatDrawerPinned);
+  els.chatDrawer.setAttribute("aria-hidden", String(!state.chatDrawerOpen));
+  els.chatDrawer.inert = !state.chatDrawerOpen;
+  els.chatDrawerToggle.setAttribute("aria-expanded", String(state.chatDrawerOpen));
+  els.chatDrawerToggle.title = state.chatDrawerOpen ? "Close chat history" : "Open chat history";
+  els.pinChatDrawer.textContent = state.chatDrawerPinned ? "Unpin" : "Pin";
+  els.pinChatDrawer.title = state.chatDrawerPinned ? "Unpin chat history" : "Pin chat history";
+}
+
+function setChatDrawerWidth(width) {
+  const parsed = Number.parseInt(width, 10);
+  if (!Number.isFinite(parsed)) return;
+  const maxWidth = Math.max(280, Math.min(520, window.innerWidth - 520));
+  const clamped = Math.max(240, Math.min(maxWidth, parsed));
+  window.document.documentElement.style.setProperty("--chat-drawer-width", `${clamped}px`);
+}
+
 function initializeChatResizer() {
   const savedWidth = Number.parseInt(window.localStorage.getItem("chatWidth") || "", 10);
   if (savedWidth) {
@@ -659,6 +809,12 @@ els.urlForm.addEventListener("submit", importUrl);
 els.fileInput.addEventListener("change", uploadFile);
 els.chatForm.addEventListener("submit", askQuestion);
 els.newChat.addEventListener("click", createNewChat);
+els.drawerNewChat.addEventListener("click", createNewChat);
+els.chatDrawerToggle.addEventListener("click", toggleChatDrawer);
+els.pinChatDrawer.addEventListener("click", toggleChatDrawerPin);
+els.chatDrawerBackdrop.addEventListener("click", closeChatDrawer);
+els.chatSearch.addEventListener("input", renderChatList);
+els.activeChatTitle.addEventListener("dblclick", beginRenameActiveChat);
 els.addDocuments.addEventListener("click", openLibraryModal);
 els.closeLibrary.addEventListener("click", closeLibraryModal);
 els.librarySearch.addEventListener("input", renderLibraryList);
@@ -676,6 +832,12 @@ els.openSource.addEventListener("click", () => {
   }
 });
 window.document.addEventListener("mouseup", captureTopSelection);
+window.document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.chatDrawerOpen && !state.chatDrawerPinned) {
+    closeChatDrawer();
+  }
+});
+initializeChatDrawer();
 initializeChatResizer();
 
 initializeApp().catch((error) => addMessage("error", "Startup failed", error.message, false));

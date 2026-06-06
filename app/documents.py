@@ -10,7 +10,7 @@ import uuid
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote, urldefrag, urljoin, urlparse
+from urllib.parse import quote, unquote, urldefrag, urljoin, urlparse
 
 import bleach
 import fitz
@@ -88,13 +88,24 @@ HTML_ATTRIBUTES = {
 }
 
 GITHUB_HOSTS = {"github.com", "www.github.com"}
+WIKIPEDIA_HOST_PATTERN = re.compile(r"^(?P<language>[a-z0-9-]+)(?:\.m)?\.wikipedia\.org$")
+DEFAULT_REMOTE_USER_AGENT = (
+    "DocReaderLLM/1.0 "
+    "(https://github.com/filipemendo/DocReaderLLM; local research document reader)"
+)
 
 
 class DocumentStore:
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, remote_user_agent: str = DEFAULT_REMOTE_USER_AGENT):
         self.data_dir = data_dir
         self.documents_dir = data_dir / "documents"
         self.documents_dir.mkdir(parents=True, exist_ok=True)
+        self.remote_headers = {
+            "User-Agent": remote_user_agent.strip() or DEFAULT_REMOTE_USER_AGENT,
+            "Api-User-Agent": remote_user_agent.strip() or DEFAULT_REMOTE_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/pdf,application/epub+zip,text/markdown,text/plain;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en;q=0.9,*;q=0.5",
+        }
 
     def list_documents(self) -> list[DocumentMetadata]:
         documents = []
@@ -139,18 +150,39 @@ class DocumentStore:
         if parsed.scheme not in {"http", "https"}:
             raise ValueError("Only http and https URLs are supported")
 
+        wikipedia_url = wikipedia_rest_html_url(url)
+        request_urls = [wikipedia_url, url] if wikipedia_url else [url]
         try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
-                response = await client.get(url)
-                response.raise_for_status()
+            async with httpx.AsyncClient(
+                follow_redirects=True,
+                headers=self.remote_headers,
+                timeout=30,
+            ) as client:
+                for index, request_url in enumerate(request_urls):
+                    try:
+                        response = await client.get(request_url)
+                        response.raise_for_status()
+                        break
+                    except httpx.HTTPError:
+                        if index == len(request_urls) - 1:
+                            raise
                 content = response.content
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 403:
+                raise ValueError(
+                    "The remote site rejected the import request (403 Forbidden). "
+                    "Set REMOTE_USER_AGENT in .env to a descriptive value that includes "
+                    "your email address or project URL, then restart the app."
+                ) from exc
+            raise ValueError(f"Could not fetch remote document: {exc}") from exc
         except httpx.HTTPError as exc:
             raise ValueError(f"Could not fetch remote document: {exc}") from exc
 
         if not content:
             raise ValueError("Remote document is empty")
 
-        filename = infer_filename_from_url(url, response.headers.get("content-type"))
+        filename_url = original_url if wikipedia_url else url
+        filename = infer_filename_from_url(filename_url, response.headers.get("content-type"))
         doc_id = uuid.uuid4().hex
         doc_dir = self._doc_dir(doc_id)
         doc_dir.mkdir(parents=True)
@@ -162,7 +194,7 @@ class DocumentStore:
             doc_id=doc_id,
             source_type="url",
             source_name=filename,
-            source_url=original_url if original_url != url else str(response.url),
+            source_url=original_url if original_url != url or wikipedia_url else str(response.url),
             mime_type=response.headers.get("content-type"),
             kind=kind,
             original_path=original_path,
@@ -279,7 +311,7 @@ def extract_epub(path: Path) -> tuple[str, str | None, str | None]:
 
 def extract_html(html: str, source_url: str | None) -> tuple[str, str | None, str | None]:
     soup = BeautifulSoup(html, "html.parser")
-    for tag in soup(["script", "noscript", "template"]):
+    for tag in soup(["script", "style", "noscript", "template"]):
         tag.decompose()
     title = soup.title.get_text(" ", strip=True) if soup.title else None
     body = soup.body or soup
@@ -512,6 +544,22 @@ def slugify(value: str) -> str:
 def normalize_import_url(url: str) -> str:
     raw = github_raw_markdown_url(url)
     return raw or url
+
+
+def wikipedia_rest_html_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    match = WIKIPEDIA_HOST_PATTERN.fullmatch(host)
+    if not match or not parsed.path.startswith("/wiki/"):
+        return None
+
+    encoded_title = parsed.path.removeprefix("/wiki/")
+    if not encoded_title:
+        return None
+
+    title = unquote(encoded_title)
+    canonical_host = f"{match.group('language')}.wikipedia.org"
+    return f"https://{canonical_host}/w/rest.php/v1/page/{quote(title, safe='')}/html"
 
 
 def github_raw_markdown_url(url: str) -> str | None:
